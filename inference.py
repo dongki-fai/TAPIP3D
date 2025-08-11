@@ -1,25 +1,31 @@
-# Copyright (c) TAPIP3D team(https://tapip3d.github.io/)
-
-from concurrent.futures import ThreadPoolExecutor
 import shlex
+import logging
 import tap
 import torch
-from typing import Optional, Tuple
+import cv2
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from einops import repeat
 from utils.common_utils import setup_logger
-import logging
 from annotation.megasam import MegaSAMAnnotator
-import numpy as np
-import cv2
 from datasets.data_ops import _filter_one_depth
-
-from utils.inference_utils import load_model, read_video, inference, get_grid_queries, resize_depth_bilinear
+from typing import (
+    Optional,
+    Tuple
+)
+from utils.inference_utils import (
+    load_model,
+    read_video,
+    inference,
+    get_grid_queries,
+    resize_depth_bilinear
+)
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
-
 DEFAULT_QUERY_GRID_SIZE = 32
+
 
 class Arguments(tap.Tap):
     input_path: str
@@ -33,7 +39,14 @@ class Arguments(tap.Tap):
     output_dir: str = "outputs/inference"
     depth_model: str = "moge"
 
-def prepare_inputs(input_path: str, inference_res: Tuple[int, int], support_grid_size: int, num_threads: int = 8, device: str = "cpu"):
+
+def prepare_inputs(
+    input_path: str,
+    inference_res: Tuple[int, int],
+    support_grid_size: int,
+    num_threads: int = 8,
+    device: str = "cpu",
+):
     if not Path (input_path).is_file():
         raise ValueError(f"Input file not found: {input_path}")
     video, depths, intrinsics, extrinsics, query_point = None, None, None, None, None
@@ -97,27 +110,71 @@ def prepare_inputs(input_path: str, inference_res: Tuple[int, int], support_grid
 
     return video, depths, intrinsics, extrinsics, query_point, support_grid_size
 
+
+def save_result(
+    video,
+    depths,
+    intrinsics,
+    extrinsics,
+    coords,
+    visibs,
+    query_point,
+    save_path
+):
+    video = video.cpu().numpy()
+    depths = depths.cpu().numpy()
+    intrinsics = intrinsics.cpu().numpy()
+    extrinsics = extrinsics.cpu().numpy()
+    coords = coords.cpu().numpy()
+    visibs = visibs.cpu().numpy()
+    query_point = query_point.cpu().numpy()
+
+    save_path.parent.mkdir(exist_ok=True, parents=True)
+    np.savez(
+        save_path,
+        video=video,
+        depths=depths,
+        intrinsics=intrinsics,
+        extrinsics=extrinsics,
+        coords=coords,
+        visibs=visibs,
+        query_points=query_point,
+    )
+    logger.info(
+        f"Results saved to {save_path.resolve()}. To visualize them, run:\n"
+        f"[bold yellow]python visualize.py {shlex.quote(str(save_path.resolve()))}[/bold yellow]"
+    )
+
+
 if __name__ == "__main__":
-    setup_logger()
+    # Parse arguments
     args = Arguments().parse_args()
 
+    # Setup logger
+    setup_logger()
+
+    # setup output directory
     output_dir = Path(args.output_dir) / f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory created at {output_dir.resolve()}")
 
     # Load model
     model = load_model(args.checkpoint)
     model.to(args.device)
-
-    inference_res = (int(model.image_size[0] * np.sqrt(args.resolution_factor)), int(model.image_size[1] * np.sqrt(args.resolution_factor)))
+    inference_res = (
+        int(model.image_size[0] * np.sqrt(args.resolution_factor)),
+        int(model.image_size[1] * np.sqrt(args.resolution_factor))
+    )
     model.set_image_size(inference_res)
+    logger.info(f"Loaded model with inference resolution: {inference_res}")
 
     # Prepare inputs
     video, depths, intrinsics, extrinsics, query_point, support_grid_size = prepare_inputs(
-        input_path=args.input_path, 
-        inference_res=inference_res, 
+        input_path=args.input_path,
+        inference_res=inference_res,
         support_grid_size=args.support_grid_size,
         num_threads=args.num_threads,
-        device=args.device
+        device=args.device,
     )
 
     # Run inference
@@ -134,25 +191,7 @@ if __name__ == "__main__":
         )
     
     # Save results
-    video = video.cpu().numpy()
-    depths = depths.cpu().numpy()
-    intrinsics = intrinsics.cpu().numpy()
-    extrinsics = extrinsics.cpu().numpy()
-    coords = coords.cpu().numpy()
-    visibs = visibs.cpu().numpy()
-    query_point = query_point.cpu().numpy()
-
-    npz_path = Path(output_dir / Path (args.input_path).name).with_suffix(".result.npz")
-    npz_path.parent.mkdir(exist_ok=True, parents=True)
-    np.savez(
-        npz_path,
-        video=video,
-        depths=depths,
-        intrinsics=intrinsics,
-        extrinsics=extrinsics,
-        coords=coords,
-        visibs=visibs,
-        query_points=query_point,
+    save_result(
+        video, depths, intrinsics, extrinsics, coords, visibs, query_point,
+        save_path=Path(output_dir / Path(args.input_path).name).with_suffix(".result.npz")
     )
-
-    logger.info(f"Results saved to {npz_path.resolve()}.\nTo visualize them, run: `[bold yellow]python visualize.py {shlex.quote(str(npz_path.resolve()))}[/bold yellow]`")

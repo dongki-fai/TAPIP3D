@@ -76,6 +76,7 @@ def _inference_with_grid(
     preds = preds.query_slice(slice(0, N_total - N_supports))
     return preds, train_data_list
 
+
 def load_model(checkpoint_path: str):
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.is_file():
@@ -85,8 +86,8 @@ def load_model(checkpoint_path: str):
     if hasattr(model, "eval_mode"):
         model.set_eval_mode("raw")
     model.eval()
-
     return model
+
 
 def read_video(video_path: str) -> np.ndarray:
     container = av.open(video_path)
@@ -95,6 +96,7 @@ def read_video(video_path: str) -> np.ndarray:
         frames.append(frame.to_ndarray(format="rgb24"))
     container.close()
     return np.stack(frames)
+
 
 def resize_depth_bilinear(depth: np.ndarray, new_shape: Tuple[int, int]) -> np.ndarray:
     is_valid = (depth > 0).astype(np.float32)
