@@ -1,10 +1,9 @@
-import cv2
+import os
 import argparse
 import open3d as o3d
 import numpy as np
 from rich import print
 from einops import rearrange
-from pathlib import Path
 
 
 def process_data(
@@ -162,7 +161,12 @@ def main(args: argparse.Namespace):
     height_max = 0.3
     height_min = height_max - args.voxel_size * 8
 
+    # create data folder if not exists
+    os.makedirs("data", exist_ok=True)
+
+
     # process each frame
+    pc_voxels = []
     for i_frame in range(video.shape[0]):
         print(f"Processing frame: {i_frame}")
 
@@ -199,40 +203,61 @@ def main(args: argparse.Namespace):
             args.voxel_size,
             bounds
         )
+        pc_voxels.append(pc_voxel[:, :, :, :3])
+
+        # make pc voxel for visualization in open3d
         pc_voxel_vis_xyz, pc_voxel_vis_rgb = [], []
         for i in range(pc_voxel.shape[0]):
             for j in range(pc_voxel.shape[1]):
                 for k in range(pc_voxel.shape[2]):
-                    if pc_voxel[i, j, k, 0] != 0:
+                    if pc_voxel[i, j, k, 0] != 0 and pc_voxel[i, j, k, 0] != 1 and pc_voxel[i, j, k, 0] != 2:
                         pc_voxel_vis_xyz.append(pc_voxel[i, j, k, :3])
                         pc_voxel_vis_rgb.append(pc_voxel[i, j, k, 3:])
 
-        # normalize pc_voxel for training stability
-        pc_voxel[:, :, :, 2] = pc_voxel[:, :, :, 2] / 10.
-        print(f"Global min x: {pc_voxel[:, :, :, 0].min():.2f} / max x: {pc_voxel[:, :, :, 0].max():.2f}")
-        print(f"Global min y: {pc_voxel[:, :, :, 1].min():.2f} / max x: {pc_voxel[:, :, :, 1].max():.2f}")
-        print(f"Global min z: {pc_voxel[:, :, :, 2].min():.2f} / max x: {pc_voxel[:, :, :, 2].max():.2f}")
-
-        # make into pcd
+        # save pcd files
         pcd_local = o3d.geometry.PointCloud()
         pcd_local.points = o3d.utility.Vector3dVector(pc_wrt_local[:, :3])
         pcd_local.colors = o3d.utility.Vector3dVector(rgb_flat.astype(np.float32))
+        o3d.io.write_point_cloud(f"data/pc_{str(i_frame).zfill(3)}_local.pcd", pcd_local)
 
         pcd_global = o3d.geometry.PointCloud()
         pcd_global.points = o3d.utility.Vector3dVector(pc_wrt_c0)
         pcd_global.colors = o3d.utility.Vector3dVector(rgb_flat.astype(np.float32))
+        o3d.io.write_point_cloud(f"data/pc_{str(i_frame).zfill(3)}_global.pcd", pcd_global)
 
         pcd_voxel = o3d.geometry.PointCloud()
         pcd_voxel.points = o3d.utility.Vector3dVector(np.array(pc_voxel_vis_xyz))
         pcd_voxel.colors = o3d.utility.Vector3dVector(np.array(pc_voxel_vis_rgb))
-
-        # # apply filtering
-        # pcd = filter_pcd(pcd)
-    
-        # save point cloud
-        o3d.io.write_point_cloud(f"data/pc_{str(i_frame).zfill(3)}_local.pcd", pcd_local)
-        o3d.io.write_point_cloud(f"data/pc_{str(i_frame).zfill(3)}_global.pcd", pcd_global)
         o3d.io.write_point_cloud(f"data/pc_{str(i_frame).zfill(3)}_voxel.pcd", pcd_voxel)
+
+    # Apply normalization between -1 and 1
+    x, y, z = [], [], []
+    for pc_voxel in pc_voxels:
+        for i in range(pc_voxel.shape[0]):
+            for j in range(pc_voxel.shape[1]):
+                for k in range(pc_voxel.shape[2]):
+                    if pc_voxel[i, j, k, 0] != 0 and pc_voxel[i, j, k, 0] != 1 and pc_voxel[i, j, k, 0] != 2:
+                        x.append(pc_voxel[i, j, k, 0])
+                        y.append(pc_voxel[i, j, k, 1])
+                        z.append(pc_voxel[i, j, k, 2])
+
+    min_x, max_x = min(np.min(x), 0), np.max(x)
+    min_y, max_y = min(np.min(y), 0), np.max(y)
+    min_z, max_z = min(np.min(z), 0), np.max(z)
+
+    print(f"Normalization values: {min_x}, {max_x}, {min_y}, {max_y}, {min_z}, {max_z}")
+
+    # save normalization values
+    np.savez("data/normalization_values.npz", min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y, min_z=min_z, max_z=max_z)
+
+    for i_frame, pc_voxel in enumerate(pc_voxels):
+        pc_voxel[:, :, :, 0] = 2 * (pc_voxel[:, :, :, 0] - min_x) / (max_x - min_x) - 1
+        pc_voxel[:, :, :, 1] = 2 * (pc_voxel[:, :, :, 1] - min_y) / (max_y - min_y) - 1
+        pc_voxel[:, :, :, 2] = 2 * (pc_voxel[:, :, :, 2] - min_z) / (max_z - min_z) - 1
+
+        print(f"min x, max x: {pc_voxel[:, :, :, 0].min():.2f}, {pc_voxel[:, :, :, 0].min():.2f}")
+        print(f"min y, max y: {pc_voxel[:, :, :, 1].min():.2f}, {pc_voxel[:, :, :, 1].min():.2f}")
+        print(f"min z, max z: {pc_voxel[:, :, :, 2].min():.2f}, {pc_voxel[:, :, :, 2].min():.2f}")
 
         # save voxel grid
         np.save(f"data/pc_{str(i_frame).zfill(3)}.npy", pc_voxel)
@@ -266,6 +291,3 @@ if __name__ == "__main__":
 # pc_wrt_local = pc_wrt_local[valid_height][:, :3]
 # pc_wrt_c0 = pc_wrt_c0[valid_height]
 # rgb_flat = rgb_flat[valid_height]
-# print(f"min x, max x: {pc_wrt_local[:, 0].min():.2f}, {pc_wrt_local[:, 0].max():.2f}")
-# print(f"min y, max y: {pc_wrt_local[:, 1].min():.2f}, {pc_wrt_local[:, 1].max():.2f}")
-# print(f"min z, max z: {pc_wrt_local[:, 2].min():.2f}, {pc_wrt_local[:, 2].max():.2f}")
